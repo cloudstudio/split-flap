@@ -1,8 +1,9 @@
 #!/bin/bash
 # Demo sequence — simulates Claude Code working on a project
-# Usage: bash demo.sh
+# Usage: bash demo.sh [session]
 
-URL="http://localhost:3420/api/message"
+SESSION="${1:-default}"
+URL="http://localhost:3420/api/message/$SESSION"
 DELAY=4
 
 send() {
@@ -26,4 +27,4 @@ send '["RUNNING NPM TEST"]'
 send '["12 TESTS PASSED"]'
 send '["TASK COMPLETE","READY"]'
 
-echo "Demo finished."
+echo "Demo finished ($SESSION)."

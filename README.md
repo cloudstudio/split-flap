@@ -24,20 +24,44 @@ The display is a 20-column x 8-row grid. Each cell animates through random chara
 
 - **SFX** button toggles procedural mechanical sound (Web Audio API)
 
+## Sessions
+
+Each URL path creates an independent display session:
+
+```
+http://localhost:3420/          → default session
+http://localhost:3420/office    → "office" session
+http://localhost:3420/tv        → "tv" session
+```
+
+Sessions are created when someone opens the URL and removed when the last viewer disconnects.
+
+## Dashboard
+
+Open `http://localhost:3420/dashboard` to see all active sessions on a single screen. The grid auto-adjusts (1 session = fullscreen, 4 = 2x2, 9 = 3x3, etc.). Canvas-rendered for performance — handles 40+ simultaneous sessions. Click any panel to open its full display.
+
+Sessions appear and disappear in real-time as viewers connect and disconnect.
+
 ## API
 
 ### Push a message
 
 ```bash
+# Default session
 curl -X POST http://localhost:3420/api/message \
   -H 'Content-Type: application/json' \
   -d '{"lines": ["HELLO", "WORLD"]}'
+
+# Named session
+curl -X POST http://localhost:3420/api/message/office \
+  -H 'Content-Type: application/json' \
+  -d '{"lines": ["STANDUP", "10:00 AM"]}'
 ```
 
 **Response:**
 
 ```json
-{ "ok": true, "clients": 2 }
+{ "ok": true, "session": "office", "clients": 2 }
 ```
 
 Text is automatically uppercased and centered on the grid. If a line contains two or more consecutive spaces, it's treated as a label-value pair and aligned to the edges:
@@ -47,13 +71,21 @@ Input:  "GATE  B42"
 Output: "GATE              B42"
 ```
 
+Messages queue up automatically. If a message arrives while flipping, it waits 3 seconds after the current flip finishes before displaying.
+
 ### Live updates (SSE)
 
 ```bash
-curl http://localhost:3420/api/events
+curl http://localhost:3420/api/events          # default session
+curl http://localhost:3420/api/events/office    # named session
+curl http://localhost:3420/api/events-all       # all sessions (used by dashboard)
 ```
 
-All connected browsers receive messages in real-time via Server-Sent Events. Open the display on a TV, tablet, or second monitor and push messages from anywhere on the network.
+### List active sessions
+
+```bash
+curl http://localhost:3420/api/sessions
+```
 
 ### URL parameters
 
@@ -64,6 +96,15 @@ http://localhost:3420?lines=FLIGHT+1234|GATE+B42|ON+TIME
 ```
 
 Lines are separated by `|`.
+
+## Demo
+
+Run a simulated Claude Code session (15 messages, 4s apart):
+
+```bash
+bash demo.sh            # default session
+bash demo.sh office     # named session
+```
 
 ## Configuration
 
@@ -107,6 +148,10 @@ Add hooks to your Claude Code settings (`.claude/settings.json`):
 - Procedural mechanical sound (Web Audio API, two-layer synthesis)
 - Random color palette flashes during transitions
 - SSE real-time push to all connected clients
+- Multiple independent sessions via URL paths
+- Canvas-rendered dashboard for monitoring all sessions
+- Automatic session discovery (connect/disconnect detection)
+- Message queue with 3s hold between flips
 - Responsive — fills any screen size
 - Zero external frontend dependencies
 - Single `express` backend dependency

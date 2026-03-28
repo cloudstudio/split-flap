@@ -36,7 +36,6 @@
     gap: clamp(1px, 0.15vw, 3px);
   }
 
-  /* Each flap half */
   .cell .flap {
     flex: none;
     background: #161616;
@@ -56,7 +55,6 @@
     border-radius: clamp(1px, 0.15vw, 2px) clamp(1px, 0.15vw, 2px) clamp(3px, 0.5vw, 8px) clamp(3px, 0.5vw, 8px);
   }
 
-  /* Character spans both halves */
   .cell .char {
     position: absolute;
     top: 50%;
@@ -92,8 +90,6 @@
       rgba(0,0,0,0.05) 2px, rgba(0,0,0,0.05) 4px
     );
   }
-
-
 </style>
 </head>
 <body>
@@ -105,21 +101,15 @@
 <script>
 const COLS = 20;
 const ROWS = 8;
-
 const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-:.!?/@#&';
-// Color palette generator — picks a random hue family, generates shades
-const COLOR_HUES = [
-  0,    // red
-  25,   // orange
-  45,   // amber
-  120,  // green
-  180,  // cyan
-  210,  // blue
-  270,  // purple
-  330,  // pink
-];
+const HOLD_TIME = 3000;
+const COLOR_HUES = [0, 25, 45, 120, 180, 210, 270, 330];
 
 let currentPalette = [];
+let isFlipping = false;
+let ambientInterval = null;
+
+// --- Color palette ---
 
 function generatePalette() {
   const hue = COLOR_HUES[Math.floor(Math.random() * COLOR_HUES.length)];
@@ -137,34 +127,8 @@ function getFlashColor() {
   return currentPalette[Math.floor(Math.random() * currentPalette.length)];
 }
 
-// Parse URL params: ?lines=LINE1|LINE2|LINE3...
-// Each line separated by |, text auto-centered in grid
-function parseURLMessages() {
-  const params = new URLSearchParams(window.location.search);
-  const linesParam = params.get('lines');
-  if (!linesParam) return null;
+// --- Grid setup ---
 
-  const lines = linesParam.split('|');
-  const msg = [];
-  const totalLines = lines.length;
-  const topPadding = Math.floor((ROWS - totalLines) / 2);
-
-  for (let r = 0; r < ROWS; r++) {
-    const lineIdx = r - topPadding;
-    if (lineIdx >= 0 && lineIdx < totalLines) {
-      const text = lines[lineIdx].toUpperCase();
-      const pad = Math.floor((COLS - text.length) / 2);
-      msg.push(' '.repeat(Math.max(0, pad)) + text);
-    } else {
-      msg.push('');
-    }
-  }
-  return [msg];
-}
-
-const MESSAGES = parseURLMessages() || [];
-
-// Set grid
 const board = document.getElementById('board');
 board.style.gridTemplateColumns = `repeat(${COLS}, 1fr)`;
 board.style.gridTemplateRows = `repeat(${ROWS}, 1fr)`;
@@ -190,7 +154,8 @@ for (let r = 0; r < ROWS; r++) {
   }
 }
 
-// Sound
+// --- Sound ---
+
 let soundEnabled = false;
 let audioCtx = null;
 
@@ -243,7 +208,33 @@ function toggleSound() {
   document.getElementById('soundBtn').textContent = soundEnabled ? 'SFX: ON' : 'SFX: OFF';
 }
 
-// Flip single cell with easing (fast start, slow finish)
+// --- Ambient flashes ---
+
+function startAmbientFlashes() {
+  if (ambientInterval) return;
+  ambientInterval = setInterval(() => {
+    const r = Math.floor(Math.random() * ROWS);
+    const c = Math.floor(Math.random() * COLS);
+    const { flapTop, flapBottom, charEl } = cells[r][c];
+    const color = getFlashColor();
+    flapTop.style.backgroundColor = color;
+    flapBottom.style.backgroundColor = color;
+    charEl.style.visibility = 'hidden';
+    setTimeout(() => {
+      flapTop.style.backgroundColor = '';
+      flapBottom.style.backgroundColor = '';
+      charEl.style.visibility = 'visible';
+    }, 80 + Math.random() * 150);
+  }, 100 + Math.random() * 200);
+}
+
+function stopAmbientFlashes() {
+  clearInterval(ambientInterval);
+  ambientInterval = null;
+}
+
+// --- Cell flip animation ---
+
 function flipCell(row, col, targetChar, delay) {
   const { cell, charEl, flapTop, flapBottom } = cells[row][col];
   const steps = 4 + Math.floor(Math.random() * 10);
@@ -270,7 +261,6 @@ function flipCell(row, col, targetChar, delay) {
             charEl.style.visibility = 'visible';
             charEl.textContent = CHARS[Math.floor(Math.random() * CHARS.length)];
           }
-
           cell.classList.remove('flipping');
           void cell.offsetWidth;
           cell.classList.add('flipping');
@@ -293,56 +283,23 @@ function flipCell(row, col, targetChar, delay) {
   });
 }
 
-// Random ambient flashes only during transitions
-let ambientInterval = null;
+// --- Message display ---
 
-function startAmbientFlashes() {
-  if (ambientInterval) return;
-  ambientInterval = setInterval(() => {
-    const r = Math.floor(Math.random() * ROWS);
-    const c = Math.floor(Math.random() * COLS);
-    const { flapTop, flapBottom, charEl } = cells[r][c];
-    const color = getFlashColor();
-
-    flapTop.style.backgroundColor = color;
-    flapBottom.style.backgroundColor = color;
-    charEl.style.visibility = 'hidden';
-
-    setTimeout(() => {
-      flapTop.style.backgroundColor = '';
-      flapBottom.style.backgroundColor = '';
-      charEl.style.visibility = 'visible';
-    }, 80 + Math.random() * 150);
-  }, 100 + Math.random() * 200);
-}
-
-function stopAmbientFlashes() {
-  clearInterval(ambientInterval);
-  ambientInterval = null;
-}
-
-let currentMessage = 0;
-let isFlipping = false;
-
-async function flipToMessage(msgIndex) {
+async function flipToMessage(lines) {
   if (isFlipping) return;
   isFlipping = true;
   currentPalette = generatePalette();
   startAmbientFlashes();
 
   // Clear corner markers
-  const first = cells[0][0];
-  const last = cells[0][COLS - 1];
-  first.flapTop.style.backgroundColor = '';
-  first.flapBottom.style.backgroundColor = '';
-  last.flapTop.style.backgroundColor = '';
-  last.flapBottom.style.backgroundColor = '';
+  cells[0][0].flapTop.style.backgroundColor = '';
+  cells[0][0].flapBottom.style.backgroundColor = '';
+  cells[0][COLS - 1].flapTop.style.backgroundColor = '';
+  cells[0][COLS - 1].flapBottom.style.backgroundColor = '';
 
-  const msg = MESSAGES[msgIndex];
   const promises = [];
-
   for (let r = 0; r < ROWS; r++) {
-    const line = (msg[r] || '').padEnd(COLS, ' ').slice(0, COLS);
+    const line = (lines[r] || '').padEnd(COLS, ' ').slice(0, COLS);
     for (let c = 0; c < COLS; c++) {
       const target = line[c];
       if (target !== cells[r][c].current) {
@@ -355,17 +312,15 @@ async function flipToMessage(msgIndex) {
   await Promise.all(promises);
   stopAmbientFlashes();
 
-  // Paint first and last cell of row 0 if empty
-  const cornerFirst = cells[0][0];
-  const cornerLast = cells[0][COLS - 1];
+  // Corner markers
   const cornerColor = getFlashColor();
-  if (cornerFirst.current === ' ') {
-    cornerFirst.flapTop.style.backgroundColor = cornerColor;
-    cornerFirst.flapBottom.style.backgroundColor = cornerColor;
+  if (cells[0][0].current === ' ') {
+    cells[0][0].flapTop.style.backgroundColor = cornerColor;
+    cells[0][0].flapBottom.style.backgroundColor = cornerColor;
   }
-  if (cornerLast.current === ' ') {
-    cornerLast.flapTop.style.backgroundColor = cornerColor;
-    cornerLast.flapBottom.style.backgroundColor = cornerColor;
+  if (cells[0][COLS - 1].current === ' ') {
+    cells[0][COLS - 1].flapTop.style.backgroundColor = cornerColor;
+    cells[0][COLS - 1].flapBottom.style.backgroundColor = cornerColor;
   }
 
   isFlipping = false;
@@ -374,7 +329,8 @@ async function flipToMessage(msgIndex) {
   }
 }
 
-// Message queue
+// --- Message queue ---
+
 const queue = [];
 
 function enqueue(lines) {
@@ -382,22 +338,36 @@ function enqueue(lines) {
   if (!isFlipping) processQueue();
 }
 
-const HOLD_TIME = 3000;
-
 function processQueue() {
   if (isFlipping || queue.length === 0) return;
-  const lines = queue.shift();
-  MESSAGES.push(lines);
-  currentMessage = MESSAGES.length - 1;
-  flipToMessage(currentMessage);
+  flipToMessage(queue.shift());
 }
 
-// After flip ends, wait HOLD_TIME before next
+// --- URL params: ?lines=LINE1|LINE2|LINE3 ---
 
-if (MESSAGES.length > 0) flipToMessage(0);
+(function () {
+  const linesParam = new URLSearchParams(window.location.search).get('lines');
+  if (!linesParam) return;
+  const lines = linesParam.split('|');
+  const msg = [];
+  const topPadding = Math.floor((ROWS - lines.length) / 2);
+  for (let r = 0; r < ROWS; r++) {
+    const lineIdx = r - topPadding;
+    if (lineIdx >= 0 && lineIdx < lines.length) {
+      const text = lines[lineIdx].toUpperCase();
+      const pad = Math.floor((COLS - text.length) / 2);
+      msg.push(' '.repeat(Math.max(0, pad)) + text);
+    } else {
+      msg.push('');
+    }
+  }
+  enqueue(msg);
+})();
 
-// SSE: listen for live messages from server
-const evtSource = new EventSource('/api/events');
+// --- SSE connection ---
+
+const session = location.pathname.replace(/^\//, '') || 'default';
+const evtSource = new EventSource(`/api/events/${session}`);
 evtSource.onmessage = (e) => {
   try {
     const { lines } = JSON.parse(e.data);

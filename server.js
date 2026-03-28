@@ -2,64 +2,53 @@ const express = require('express');
 const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3420;
+const COLS = 20;
+const ROWS = 8;
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// SSE clients
-const clients = [];
+// State
+const sessions = new Map();
+const globalClients = [];
+const lastMessage = new Map();
 
-app.get('/api/events', (req, res) => {
-  res.set({
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-  });
-  res.flushHeaders();
-  clients.push(res);
-  req.on('close', () => {
-    const i = clients.indexOf(res);
-    if (i !== -1) clients.splice(i, 1);
-  });
-});
+function getSession(id) {
+  if (!sessions.has(id)) sessions.set(id, []);
+  return sessions.get(id);
+}
 
-const COLS = 20;
-const ROWS = 8;
+function broadcastSessionList() {
+  const list = [];
+  for (const [id, clients] of sessions) {
+    list.push({ id, clients: clients.length });
+  }
+  const data = JSON.stringify({ type: 'sessions', list });
+  globalClients.forEach(c => c.write(`data: ${data}\n\n`));
+}
 
-// Detect if a line has a "label  value" pattern (label then spaces then value)
 function formatLine(line) {
   line = line.trim().toUpperCase();
   if (line.length === 0) return '';
 
-  // Try to detect "LABEL   VALUE" pattern (2+ spaces separating)
+  // "LABEL   VALUE" pattern — align to edges
   const match = line.match(/^(.+?)\s{2,}(.+)$/);
   if (match) {
     const label = match[1].trim();
     const value = match[2].trim();
     const gap = COLS - label.length - value.length;
-    if (gap >= 1) {
-      return label + ' '.repeat(gap) + value;
-    }
+    if (gap >= 1) return label + ' '.repeat(gap) + value;
   }
 
-  // No pattern detected: center the line
+  // Center the line
   const pad = Math.floor((COLS - line.length) / 2);
   return ' '.repeat(Math.max(0, pad)) + line;
 }
 
-// POST /api/message { lines: ["LINE 1", "LINE 2", ...] }
-app.post('/api/message', (req, res) => {
-  const { lines } = req.body;
-  if (!lines || !Array.isArray(lines) || !lines.every(l => typeof l === 'string')) {
-    return res.status(400).json({ error: 'Send { lines: ["LINE1", "LINE2", ...] }' });
-  }
-
-  // Filter empty lines to count real content for vertical centering
+function formatMessage(lines) {
   const contentLines = lines.filter(l => l.trim().length > 0);
   const topPadding = Math.floor((ROWS - contentLines.length) / 2);
-
   const result = [];
-  let contentIdx = 0;
   for (let r = 0; r < ROWS; r++) {
     const lineIdx = r - topPadding;
     if (lineIdx >= 0 && lineIdx < contentLines.length) {
@@ -68,10 +57,101 @@ app.post('/api/message', (req, res) => {
       result.push('');
     }
   }
+  return result;
+}
 
+// --- SSE endpoints ---
+
+// Per-session stream (used by individual displays)
+app.get(['/api/events', '/api/events/:session'], (req, res) => {
+  const session = req.params.session || 'default';
+  res.set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  });
+  res.flushHeaders();
+  const clients = getSession(session);
+  clients.push(res);
+  broadcastSessionList();
+  req.on('close', () => {
+    const i = clients.indexOf(res);
+    if (i !== -1) clients.splice(i, 1);
+    if (clients.length === 0) {
+      sessions.delete(session);
+      lastMessage.delete(session);
+    }
+    broadcastSessionList();
+  });
+});
+
+// Global stream (used by dashboard — single connection for all sessions)
+app.get('/api/events-all', (req, res) => {
+  res.set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  });
+  res.flushHeaders();
+
+  // Send current state
+  for (const [id, lines] of lastMessage) {
+    res.write(`data: ${JSON.stringify({ session: id, lines })}\n\n`);
+  }
+  // Send current session list
+  const list = [];
+  for (const [id, clients] of sessions) {
+    list.push({ id, clients: clients.length });
+  }
+  res.write(`data: ${JSON.stringify({ type: 'sessions', list })}\n\n`);
+
+  globalClients.push(res);
+  req.on('close', () => {
+    const i = globalClients.indexOf(res);
+    if (i !== -1) globalClients.splice(i, 1);
+  });
+});
+
+// --- REST endpoints ---
+
+app.post(['/api/message', '/api/message/:session'], (req, res) => {
+  const session = req.params.session || 'default';
+  const { lines } = req.body;
+  if (!lines || !Array.isArray(lines) || !lines.every(l => typeof l === 'string')) {
+    return res.status(400).json({ error: 'Send { lines: ["LINE1", "LINE2", ...] }' });
+  }
+
+  const result = formatMessage(lines);
+  lastMessage.set(session, result);
+
+  // Push to session clients
+  const clients = getSession(session);
   const data = JSON.stringify({ lines: result });
   clients.forEach(c => c.write(`data: ${data}\n\n`));
-  res.json({ ok: true, clients: clients.length });
+
+  // Push to dashboard clients
+  const globalData = JSON.stringify({ session, lines: result });
+  globalClients.forEach(c => c.write(`data: ${globalData}\n\n`));
+
+  res.json({ ok: true, session, clients: clients.length });
+});
+
+app.get('/api/sessions', (req, res) => {
+  const list = [];
+  for (const [id, clients] of sessions) {
+    list.push({ id, clients: clients.length });
+  }
+  res.json(list);
+});
+
+// --- Pages ---
+
+app.get('/dashboard', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
+});
+
+app.get('/:session', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 app.listen(PORT, () => {

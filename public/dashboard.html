@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Split-Flap Dashboard</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;700&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0a;
+    font-family: 'Roboto Mono', monospace;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+  }
+  .grid {
+    width: 100vw;
+    height: 100vh;
+    display: grid;
+    gap: 4px;
+    padding: 4px;
+  }
+  .panel {
+    position: relative;
+    border: 1px solid #222;
+    border-radius: 4px;
+    overflow: hidden;
+    cursor: pointer;
+    background: #0e0e0e;
+  }
+  .panel:hover { border-color: #444; }
+  .panel canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  .panel .label {
+    position: absolute;
+    top: 4px;
+    left: 6px;
+    font-size: 8px;
+    color: #555;
+    letter-spacing: 2px;
+    z-index: 10;
+  }
+  .scanlines {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+    z-index: 100;
+    background: repeating-linear-gradient(
+      0deg, transparent, transparent 2px,
+      rgba(0,0,0,0.05) 2px, rgba(0,0,0,0.05) 4px
+    );
+  }
+  .empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    color: #444;
+    font-size: 12px;
+    letter-spacing: 2px;
+  }
+</style>
+</head>
+<body>
+<div class="scanlines"></div>
+
+<div class="grid" id="grid">
+  <div class="empty">WAITING FOR SESSIONS...</div>
+</div>
+
+<script>
+const COLS = 20;
+const ROWS = 8;
+const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-:.!?/@#&';
+const COLOR_HUES = [0, 25, 45, 120, 180, 210, 270, 330];
+const HOLD_TIME = 2000;
+
+const boards = {};
+let needsRebuild = false;
+
+function calcGrid(n) {
+  if (n <= 1) return [1, 1];
+  if (n <= 2) return [2, 1];
+  if (n <= 4) return [2, 2];
+  if (n <= 6) return [3, 2];
+  if (n <= 9) return [3, 3];
+  if (n <= 12) return [4, 3];
+  const cols = Math.ceil(Math.sqrt(n));
+  return [cols, Math.ceil(n / cols)];
+}
+
+function generatePalette() {
+  const hue = COLOR_HUES[Math.floor(Math.random() * COLOR_HUES.length)];
+  const palette = [];
+  for (let i = 0; i < 4; i++) {
+    const h = hue + (Math.random() * 20 - 10);
+    const s = 55 + Math.random() * 35;
+    const l = 35 + Math.random() * 25;
+    palette.push(`hsl(${h}, ${s}%, ${l}%)`);
+  }
+  return palette;
+}
+
+function createBoard(sessionId) {
+  const panel = document.createElement('div');
+  panel.className = 'panel';
+  panel.onclick = () => window.open(`/${sessionId === 'default' ? '' : sessionId}`, '_blank');
+
+  const label = document.createElement('div');
+  label.className = 'label';
+  label.textContent = sessionId.toUpperCase();
+  panel.appendChild(label);
+
+  const canvas = document.createElement('canvas');
+  panel.appendChild(canvas);
+
+  const cells = [];
+  for (let r = 0; r < ROWS; r++) {
+    cells[r] = [];
+    for (let c = 0; c < COLS; c++) {
+      cells[r][c] = {
+        current: ' ',
+        display: ' ',
+        target: ' ',
+        steps: 0,
+        step: 0,
+        delay: 0,
+        startTime: 0,
+        flashColor: null,
+        flipPhase: 0,
+      };
+    }
+  }
+
+  boards[sessionId] = {
+    panel, canvas, cells,
+    ctx: null, palette: generatePalette(),
+    isFlipping: false, queue: [],
+    dirty: true, sized: false,
+  };
+
+  needsRebuild = true;
+  return panel;
+}
+
+function sizeCanvas(board) {
+  const canvas = board.canvas;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  board.ctx = canvas.getContext('2d');
+  board.ctx.scale(dpr, dpr);
+  board.w = rect.width;
+  board.h = rect.height;
+  board.sized = true;
+  board.dirty = true;
+}
+
+function drawBoard(board) {
+  if (!board.ctx || !board.sized) return;
+  const { ctx, cells, w, h } = board;
+  const pad = 2;
+  const gap = 1;
+  const cellW = (w - pad * 2 - gap * (COLS - 1)) / COLS;
+  const cellH = (h - pad * 2 - gap * (ROWS - 1)) / ROWS;
+  const topH = cellH * 0.4;
+  const botH = cellH * 0.58;
+  const splitGap = cellH * 0.02;
+  const fontSize = Math.min(cellW * 0.75, cellH * 0.55);
+
+  ctx.fillStyle = '#0e0e0e';
+  ctx.fillRect(0, 0, w, h);
+  ctx.font = `${fontSize}px 'Roboto Mono', monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const cell = cells[r][c];
+      const x = pad + c * (cellW + gap);
+      const y = pad + r * (cellH + gap);
+      const bg = cell.flashColor || '#161616';
+
+      // Flip squash: top flap compresses, simulating 3D rotation
+      const phase = cell.flipPhase; // 0 = rest, 1 = mid-flip
+      const topSquash = 1 - phase * 0.35;
+      const topOffset = topH * (1 - topSquash);
+      const actualTopH = topH * topSquash;
+
+      // Top flap
+      ctx.fillStyle = bg;
+      ctx.beginPath();
+      ctx.roundRect(x, y + topOffset, cellW, actualTopH, [2, 2, 0, 0]);
+      ctx.fill();
+
+      // Bottom flap
+      ctx.beginPath();
+      ctx.roundRect(x, y + topH + splitGap, cellW, botH, [0, 0, 2, 2]);
+      ctx.fill();
+
+      // Character — offset slightly during flip
+      if (!cell.flashColor) {
+        ctx.fillStyle = '#dcdcdc';
+        const charY = y + cellH / 2 + topOffset * 0.3;
+        ctx.fillText(cell.display, x + cellW / 2, charY);
+      }
+    }
+  }
+}
+
+function startFlip(sessionId, lines) {
+  const board = boards[sessionId];
+  if (!board) return;
+  board.queue.push(lines);
+  if (!board.isFlipping) processQueue(sessionId);
+}
+
+function processQueue(sessionId) {
+  const board = boards[sessionId];
+  if (!board || board.isFlipping || board.queue.length === 0) return;
+
+  board.isFlipping = true;
+  board.palette = generatePalette();
+  const lines = board.queue.shift();
+  const now = performance.now();
+
+  for (let r = 0; r < ROWS; r++) {
+    const line = (lines[r] || '').padEnd(COLS, ' ').slice(0, COLS);
+    for (let c = 0; c < COLS; c++) {
+      const cell = board.cells[r][c];
+      const target = line[c];
+      if (target !== cell.current) {
+        cell.target = target;
+        cell.steps = 3 + Math.floor(Math.random() * 5);
+        cell.step = 0;
+        cell.delay = c * 15 + r * 40 + Math.random() * 30;
+        cell.startTime = now + cell.delay;
+        cell.flashColor = null;
+      } else {
+        cell.steps = 0;
+      }
+    }
+  }
+  board.dirty = true;
+}
+
+function updateBoard(board, now) {
+  if (!board.isFlipping) return;
+
+  let allDone = true;
+
+  // Ambient flashes — random cells flash during transition
+  if (Math.random() < 0.3) {
+    const ar = Math.floor(Math.random() * ROWS);
+    const ac = Math.floor(Math.random() * COLS);
+    const ambient = board.cells[ar][ac];
+    if (ambient.steps === 0 && !ambient._ambientFlash) {
+      ambient._ambientFlash = true;
+      ambient.flashColor = board.palette[Math.floor(Math.random() * board.palette.length)];
+      ambient._savedDisplay = ambient.display;
+      ambient.display = ' ';
+      board.dirty = true;
+      setTimeout(() => {
+        ambient.flashColor = null;
+        ambient.display = ambient._savedDisplay || ambient.current;
+        ambient._ambientFlash = false;
+        board.dirty = true;
+      }, 60 + Math.random() * 100);
+    }
+  }
+
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const cell = board.cells[r][c];
+      if (cell.steps === 0) continue;
+      if (now < cell.startTime) { allDone = false; continue; }
+
+      const elapsed = now - cell.startTime;
+      const progress = cell.step / cell.steps;
+      const stepDuration = 15 + progress * progress * 80;
+      const targetStep = Math.floor(elapsed / stepDuration);
+
+      if (targetStep > cell.step) {
+        cell.step = Math.min(targetStep, cell.steps);
+
+        if (cell.step >= cell.steps) {
+          cell.display = cell.target;
+          cell.current = cell.target;
+          cell.flashColor = null;
+          cell.flipPhase = 0;
+          cell.steps = 0;
+        } else if (Math.random() < 0.15) {
+          cell.flashColor = board.palette[Math.floor(Math.random() * board.palette.length)];
+          cell.display = ' ';
+          cell.flipPhase = 0.5 + Math.random() * 0.5;
+        } else {
+          cell.flashColor = null;
+          cell.display = CHARS[Math.floor(Math.random() * CHARS.length)];
+          // Sine wave squash: peaks at mid-flip, returns to rest
+          const t = cell.step / cell.steps;
+          cell.flipPhase = Math.sin(t * Math.PI) * 0.8;
+        }
+        board.dirty = true;
+      }
+
+      if (cell.steps > 0) allDone = false;
+    }
+  }
+
+  if (allDone) {
+    board.isFlipping = false;
+
+    // Corner markers — color first and last cell of row 0 if empty
+    const cornerColor = board.palette[Math.floor(Math.random() * board.palette.length)];
+    const first = board.cells[0][0];
+    const last = board.cells[0][COLS - 1];
+    if (first.current === ' ') { first.flashColor = cornerColor; board.dirty = true; }
+    if (last.current === ' ') { last.flashColor = cornerColor; board.dirty = true; }
+
+    if (board.queue.length > 0) {
+      setTimeout(() => processQueue(Object.keys(boards).find(k => boards[k] === board)), HOLD_TIME);
+    }
+  }
+}
+
+function rebuildGrid() {
+  const grid = document.getElementById('grid');
+  const ids = Object.keys(boards).sort();
+
+  if (ids.length === 0) {
+    grid.innerHTML = '<div class="empty">WAITING FOR SESSIONS...</div>';
+    return;
+  }
+
+  const [cols, rows] = calcGrid(ids.length);
+  grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+
+  grid.innerHTML = '';
+  ids.forEach(id => grid.appendChild(boards[id].panel));
+
+  // Size canvases after layout
+  requestAnimationFrame(() => {
+    ids.forEach(id => sizeCanvas(boards[id]));
+  });
+
+  needsRebuild = false;
+}
+
+// Main render loop
+function frame(now) {
+  if (needsRebuild) rebuildGrid();
+
+  for (const id in boards) {
+    const board = boards[id];
+    updateBoard(board, now);
+    if (board.dirty && board.sized) {
+      drawBoard(board);
+      board.dirty = false;
+    }
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// Handle resize
+window.addEventListener('resize', () => {
+  for (const id in boards) {
+    sizeCanvas(boards[id]);
+  }
+});
+
+// Single SSE connection for all sessions
+const evtSource = new EventSource('/api/events-all');
+evtSource.onmessage = (e) => {
+  try {
+    const msg = JSON.parse(e.data);
+
+    // Session list update (connect/disconnect)
+    if (msg.type === 'sessions') {
+      const activeIds = new Set(msg.list.map(s => s.id));
+      // Remove boards for disconnected sessions
+      for (const id of Object.keys(boards)) {
+        if (!activeIds.has(id)) {
+          delete boards[id];
+          needsRebuild = true;
+        }
+      }
+      // Add boards for new sessions (will show empty until message arrives)
+      for (const s of msg.list) {
+        if (!boards[s.id]) {
+          createBoard(s.id);
+        }
+      }
+      return;
+    }
+
+    // Message update
+    const { session, lines } = msg;
+    if (!boards[session]) createBoard(session);
+    startFlip(session, lines);
+  } catch (err) {}
+};
+</script>
+
+</body>
+</html>
