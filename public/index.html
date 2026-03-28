@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Split-Flap Display</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    background: #0a0a0a;
+    font-family: 'Roboto Mono', monospace;
+  }
+
+  .board {
+    width: 100vw;
+    height: 100vh;
+    display: grid;
+    padding: clamp(6px, 1.2vw, 16px);
+    gap: clamp(4px, 0.7vw, 10px);
+    background: #161616;
+  }
+
+  .cell {
+    background: transparent;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: stretch;
+    position: relative;
+    gap: clamp(1px, 0.15vw, 3px);
+  }
+
+  /* Each flap half */
+  .cell .flap {
+    flex: none;
+    background: #161616;
+    position: relative;
+    overflow: hidden;
+    border: 1px solid #000;
+    transition: background-color 0.05s;
+  }
+
+  .cell .flap-top {
+    height: 40%;
+    border-radius: clamp(3px, 0.5vw, 8px) clamp(3px, 0.5vw, 8px) clamp(1px, 0.15vw, 2px) clamp(1px, 0.15vw, 2px);
+  }
+
+  .cell .flap-bottom {
+    height: 60%;
+    border-radius: clamp(1px, 0.15vw, 2px) clamp(1px, 0.15vw, 2px) clamp(3px, 0.5vw, 8px) clamp(3px, 0.5vw, 8px);
+  }
+
+  /* Character spans both halves */
+  .cell .char {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: clamp(14px, 2.8vw, 48px);
+    font-weight: 400;
+    color: #dcdcdc;
+    z-index: 4;
+    text-shadow: 0 0 8px rgba(255,255,255,0.05);
+    letter-spacing: 0.05em;
+    line-height: 1;
+    pointer-events: none;
+  }
+
+  .cell.flipping {
+    animation: cellFlip 0.08s ease-in-out;
+  }
+
+  @keyframes cellFlip {
+    0%   { transform: perspective(400px) rotateX(0deg); }
+    50%  { transform: perspective(400px) rotateX(-8deg); }
+    100% { transform: perspective(400px) rotateX(0deg); }
+  }
+
+  .scanlines {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+    z-index: 100;
+    background: repeating-linear-gradient(
+      0deg, transparent, transparent 2px,
+      rgba(0,0,0,0.05) 2px, rgba(0,0,0,0.05) 4px
+    );
+  }
+
+
+</style>
+</head>
+<body>
+
+<div class="scanlines"></div>
+<div class="board" id="board"></div>
+<button id="soundBtn" onclick="toggleSound()" style="position:fixed;bottom:16px;right:100px;z-index:50;background:#222;border:1px solid #333;color:#666;font-family:'Roboto Mono',monospace;font-size:10px;padding:6px 12px;border-radius:4px;cursor:pointer;letter-spacing:1px">SFX: OFF</button>
+<button id="randomBtn" style="position:fixed;bottom:16px;right:16px;z-index:50;background:#222;border:1px solid #333;color:#666;font-family:'Roboto Mono',monospace;font-size:10px;padding:6px 12px;border-radius:4px;cursor:pointer;letter-spacing:1px">RANDOM</button>
+
+<script>
+const COLS = 20;
+const ROWS = 8;
+
+const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-:.!?/@#&';
+// Color palette generator — picks a random hue family, generates shades
+const COLOR_HUES = [
+  0,    // red
+  25,   // orange
+  45,   // amber
+  120,  // green
+  180,  // cyan
+  210,  // blue
+  270,  // purple
+  330,  // pink
+];
+
+let currentPalette = [];
+
+function generatePalette() {
+  const hue = COLOR_HUES[Math.floor(Math.random() * COLOR_HUES.length)];
+  const palette = [];
+  for (let i = 0; i < 6; i++) {
+    const h = hue + (Math.random() * 20 - 10);
+    const s = 55 + Math.random() * 35;
+    const l = 35 + Math.random() * 25;
+    palette.push(`hsl(${h}, ${s}%, ${l}%)`);
+  }
+  return palette;
+}
+
+function getFlashColor() {
+  return currentPalette[Math.floor(Math.random() * currentPalette.length)];
+}
+
+// Parse URL params: ?lines=LINE1|LINE2|LINE3...
+// Each line separated by |, text auto-centered in grid
+function parseURLMessages() {
+  const params = new URLSearchParams(window.location.search);
+  const linesParam = params.get('lines');
+  if (!linesParam) return null;
+
+  const lines = linesParam.split('|');
+  const msg = [];
+  const totalLines = lines.length;
+  const topPadding = Math.floor((ROWS - totalLines) / 2);
+
+  for (let r = 0; r < ROWS; r++) {
+    const lineIdx = r - topPadding;
+    if (lineIdx >= 0 && lineIdx < totalLines) {
+      const text = lines[lineIdx].toUpperCase();
+      const pad = Math.floor((COLS - text.length) / 2);
+      msg.push(' '.repeat(Math.max(0, pad)) + text);
+    } else {
+      msg.push('');
+    }
+  }
+  return [msg];
+}
+
+const MESSAGES = parseURLMessages() || [];
+
+// Set grid
+const board = document.getElementById('board');
+board.style.gridTemplateColumns = `repeat(${COLS}, 1fr)`;
+board.style.gridTemplateRows = `repeat(${ROWS}, 1fr)`;
+
+const cells = [];
+for (let r = 0; r < ROWS; r++) {
+  cells[r] = [];
+  for (let c = 0; c < COLS; c++) {
+    const cell = document.createElement('div');
+    cell.className = 'cell';
+    const flapTop = document.createElement('div');
+    flapTop.className = 'flap flap-top';
+    const flapBottom = document.createElement('div');
+    flapBottom.className = 'flap flap-bottom';
+    const charEl = document.createElement('span');
+    charEl.className = 'char';
+    charEl.textContent = ' ';
+    cell.appendChild(flapTop);
+    cell.appendChild(flapBottom);
+    cell.appendChild(charEl);
+    board.appendChild(cell);
+    cells[r][c] = { cell, charEl, flapTop, flapBottom, current: ' ' };
+  }
+}
+
+// Sound
+let soundEnabled = false;
+let audioCtx = null;
+
+function initAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+}
+
+function playFlipSound() {
+  if (!soundEnabled || !audioCtx) return;
+  const t = audioCtx.currentTime;
+
+  // Layer 1: sharp click transient (filtered noise burst)
+  const clickLen = Math.floor(audioCtx.sampleRate * 0.006);
+  const clickBuf = audioCtx.createBuffer(1, clickLen, audioCtx.sampleRate);
+  const clickData = clickBuf.getChannelData(0);
+  for (let i = 0; i < clickLen; i++) {
+    const env = 1 - (i / clickLen);
+    clickData[i] = (Math.random() * 2 - 1) * env * env;
+  }
+  const clickSrc = audioCtx.createBufferSource();
+  clickSrc.buffer = clickBuf;
+  const clickGain = audioCtx.createGain();
+  clickGain.gain.setValueAtTime(0.12, t);
+  clickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.015);
+  const hipass = audioCtx.createBiquadFilter();
+  hipass.type = 'highpass';
+  hipass.frequency.value = 1800 + Math.random() * 600;
+  clickSrc.connect(hipass);
+  hipass.connect(clickGain);
+  clickGain.connect(audioCtx.destination);
+  clickSrc.start(t);
+
+  // Layer 2: low thump (resonant body of the flap)
+  const osc = audioCtx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(150 + Math.random() * 60, t);
+  osc.frequency.exponentialRampToValueAtTime(50, t + 0.04);
+  const thumpGain = audioCtx.createGain();
+  thumpGain.gain.setValueAtTime(0.06, t);
+  thumpGain.gain.exponentialRampToValueAtTime(0.001, t + 0.035);
+  osc.connect(thumpGain);
+  thumpGain.connect(audioCtx.destination);
+  osc.start(t);
+  osc.stop(t + 0.05);
+}
+
+function toggleSound() {
+  initAudio();
+  soundEnabled = !soundEnabled;
+  document.getElementById('soundBtn').textContent = soundEnabled ? 'SFX: ON' : 'SFX: OFF';
+}
+
+// Flip single cell with easing (fast start, slow finish)
+function flipCell(row, col, targetChar, delay) {
+  const { cell, charEl, flapTop, flapBottom } = cells[row][col];
+  const steps = 4 + Math.floor(Math.random() * 10);
+  let step = 0;
+
+  function getDelay(s, total) {
+    const progress = s / total;
+    const eased = progress * progress * progress;
+    return 25 + eased * 200;
+  }
+
+  return new Promise(resolve => {
+    setTimeout(() => {
+      function tick() {
+        if (step < steps) {
+          if (Math.random() < 0.15) {
+            const color = getFlashColor();
+            flapTop.style.backgroundColor = color;
+            flapBottom.style.backgroundColor = color;
+            charEl.style.visibility = 'hidden';
+          } else {
+            flapTop.style.backgroundColor = '';
+            flapBottom.style.backgroundColor = '';
+            charEl.style.visibility = 'visible';
+            charEl.textContent = CHARS[Math.floor(Math.random() * CHARS.length)];
+          }
+
+          cell.classList.remove('flipping');
+          void cell.offsetWidth;
+          cell.classList.add('flipping');
+          playFlipSound();
+          step++;
+          setTimeout(tick, getDelay(step, steps));
+        } else {
+          charEl.textContent = targetChar;
+          charEl.style.visibility = 'visible';
+          flapTop.style.backgroundColor = '';
+          flapBottom.style.backgroundColor = '';
+          cell.classList.remove('flipping');
+          cells[row][col].current = targetChar;
+          playFlipSound();
+          resolve();
+        }
+      }
+      tick();
+    }, delay);
+  });
+}
+
+// Random ambient flashes only during transitions
+let ambientInterval = null;
+
+function startAmbientFlashes() {
+  if (ambientInterval) return;
+  ambientInterval = setInterval(() => {
+    const r = Math.floor(Math.random() * ROWS);
+    const c = Math.floor(Math.random() * COLS);
+    const { flapTop, flapBottom, charEl } = cells[r][c];
+    const color = getFlashColor();
+
+    flapTop.style.backgroundColor = color;
+    flapBottom.style.backgroundColor = color;
+    charEl.style.visibility = 'hidden';
+
+    setTimeout(() => {
+      flapTop.style.backgroundColor = '';
+      flapBottom.style.backgroundColor = '';
+      charEl.style.visibility = 'visible';
+    }, 80 + Math.random() * 150);
+  }, 100 + Math.random() * 200);
+}
+
+function stopAmbientFlashes() {
+  clearInterval(ambientInterval);
+  ambientInterval = null;
+}
+
+let currentMessage = 0;
+let isFlipping = false;
+
+async function flipToMessage(msgIndex) {
+  if (isFlipping) return;
+  isFlipping = true;
+  currentPalette = generatePalette();
+  startAmbientFlashes();
+
+  // Clear corner markers
+  const first = cells[0][0];
+  const last = cells[0][COLS - 1];
+  first.flapTop.style.backgroundColor = '';
+  first.flapBottom.style.backgroundColor = '';
+  last.flapTop.style.backgroundColor = '';
+  last.flapBottom.style.backgroundColor = '';
+
+  const msg = MESSAGES[msgIndex];
+  const promises = [];
+
+  for (let r = 0; r < ROWS; r++) {
+    const line = (msg[r] || '').padEnd(COLS, ' ').slice(0, COLS);
+    for (let c = 0; c < COLS; c++) {
+      const target = line[c];
+      if (target !== cells[r][c].current) {
+        const delay = c * 35 + r * 80 + Math.random() * 60;
+        promises.push(flipCell(r, c, target, delay));
+      }
+    }
+  }
+
+  await Promise.all(promises);
+  stopAmbientFlashes();
+
+  // Paint first and last cell of row 0 if empty
+  const cornerFirst = cells[0][0];
+  const cornerLast = cells[0][COLS - 1];
+  const cornerColor = getFlashColor();
+  if (cornerFirst.current === ' ') {
+    cornerFirst.flapTop.style.backgroundColor = cornerColor;
+    cornerFirst.flapBottom.style.backgroundColor = cornerColor;
+  }
+  if (cornerLast.current === ' ') {
+    cornerLast.flapTop.style.backgroundColor = cornerColor;
+    cornerLast.flapBottom.style.backgroundColor = cornerColor;
+  }
+
+  isFlipping = false;
+}
+
+if (MESSAGES.length > 0) flipToMessage(0);
+
+// Random text generator
+function randomWord(len) {
+  let w = '';
+  for (let i = 0; i < len; i++) w += CHARS[Math.floor(Math.random() * 26)];
+  return w;
+}
+
+function generateRandomMessage() {
+  const numLines = 2 + Math.floor(Math.random() * 5);
+  const lines = [];
+  for (let i = 0; i < numLines; i++) {
+    const words = 1 + Math.floor(Math.random() * 3);
+    let line = '';
+    for (let w = 0; w < words; w++) {
+      if (w > 0) line += ' ';
+      line += randomWord(2 + Math.floor(Math.random() * 8));
+    }
+    lines.push(line.slice(0, COLS));
+  }
+  return lines;
+}
+
+document.getElementById('randomBtn').addEventListener('click', () => {
+  if (isFlipping) return;
+  const msg = generateRandomMessage();
+  const padded = [];
+  const topPad = Math.floor((ROWS - msg.length) / 2);
+  for (let r = 0; r < ROWS; r++) {
+    const idx = r - topPad;
+    if (idx >= 0 && idx < msg.length) {
+      const text = msg[idx];
+      const pad = Math.floor((COLS - text.length) / 2);
+      padded.push(' '.repeat(Math.max(0, pad)) + text);
+    } else {
+      padded.push('');
+    }
+  }
+  MESSAGES.push(padded);
+  currentMessage = MESSAGES.length - 1;
+  flipToMessage(currentMessage);
+});
+
+// SSE: listen for live messages from server
+const evtSource = new EventSource('/api/events');
+evtSource.onmessage = (e) => {
+  try {
+    const { lines } = JSON.parse(e.data);
+    MESSAGES.push(lines);
+    currentMessage = MESSAGES.length - 1;
+    if (!isFlipping) {
+      flipToMessage(currentMessage);
+    }
+  } catch (err) {}
+};
+</script>
+
+</body>
+</html>

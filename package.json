@@ -1,0 +1,16 @@
+{
+  "name": "split-flap",
+  "version": "1.0.0",
+  "description": "Real-time split-flap display simulator with SSE push API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": ["split-flap", "display", "sse", "real-time", "animation"],
+  "author": "Toni Soriano <toni@cloudstudio.dev>",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}
