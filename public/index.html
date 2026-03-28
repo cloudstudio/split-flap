@@ -100,8 +100,7 @@
 
 <div class="scanlines"></div>
 <div class="board" id="board"></div>
-<button id="soundBtn" onclick="toggleSound()" style="position:fixed;bottom:16px;right:100px;z-index:50;background:#222;border:1px solid #333;color:#666;font-family:'Roboto Mono',monospace;font-size:10px;padding:6px 12px;border-radius:4px;cursor:pointer;letter-spacing:1px">SFX: OFF</button>
-<button id="randomBtn" style="position:fixed;bottom:16px;right:16px;z-index:50;background:#222;border:1px solid #333;color:#666;font-family:'Roboto Mono',monospace;font-size:10px;padding:6px 12px;border-radius:4px;cursor:pointer;letter-spacing:1px">RANDOM</button>
+<button id="soundBtn" onclick="toggleSound()" style="position:fixed;bottom:16px;right:16px;z-index:50;background:#222;border:1px solid #333;color:#666;font-family:'Roboto Mono',monospace;font-size:10px;padding:6px 12px;border-radius:4px;cursor:pointer;letter-spacing:1px">SFX: OFF</button>
 
 <script>
 const COLS = 20;
@@ -370,62 +369,39 @@ async function flipToMessage(msgIndex) {
   }
 
   isFlipping = false;
-}
-
-if (MESSAGES.length > 0) flipToMessage(0);
-
-// Random text generator
-function randomWord(len) {
-  let w = '';
-  for (let i = 0; i < len; i++) w += CHARS[Math.floor(Math.random() * 26)];
-  return w;
-}
-
-function generateRandomMessage() {
-  const numLines = 2 + Math.floor(Math.random() * 5);
-  const lines = [];
-  for (let i = 0; i < numLines; i++) {
-    const words = 1 + Math.floor(Math.random() * 3);
-    let line = '';
-    for (let w = 0; w < words; w++) {
-      if (w > 0) line += ' ';
-      line += randomWord(2 + Math.floor(Math.random() * 8));
-    }
-    lines.push(line.slice(0, COLS));
+  if (queue.length > 0) {
+    setTimeout(processQueue, HOLD_TIME);
   }
-  return lines;
 }
 
-document.getElementById('randomBtn').addEventListener('click', () => {
-  if (isFlipping) return;
-  const msg = generateRandomMessage();
-  const padded = [];
-  const topPad = Math.floor((ROWS - msg.length) / 2);
-  for (let r = 0; r < ROWS; r++) {
-    const idx = r - topPad;
-    if (idx >= 0 && idx < msg.length) {
-      const text = msg[idx];
-      const pad = Math.floor((COLS - text.length) / 2);
-      padded.push(' '.repeat(Math.max(0, pad)) + text);
-    } else {
-      padded.push('');
-    }
-  }
-  MESSAGES.push(padded);
+// Message queue
+const queue = [];
+
+function enqueue(lines) {
+  queue.push(lines);
+  if (!isFlipping) processQueue();
+}
+
+const HOLD_TIME = 3000;
+
+function processQueue() {
+  if (isFlipping || queue.length === 0) return;
+  const lines = queue.shift();
+  MESSAGES.push(lines);
   currentMessage = MESSAGES.length - 1;
   flipToMessage(currentMessage);
-});
+}
+
+// After flip ends, wait HOLD_TIME before next
+
+if (MESSAGES.length > 0) flipToMessage(0);
 
 // SSE: listen for live messages from server
 const evtSource = new EventSource('/api/events');
 evtSource.onmessage = (e) => {
   try {
     const { lines } = JSON.parse(e.data);
-    MESSAGES.push(lines);
-    currentMessage = MESSAGES.length - 1;
-    if (!isFlipping) {
-      flipToMessage(currentMessage);
-    }
+    enqueue(lines);
   } catch (err) {}
 };
 </script>

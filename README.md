@@ -23,7 +23,6 @@ The display is a 20-column x 8-row grid. Each cell animates through random chara
 **In the browser:**
 
 - **SFX** button toggles procedural mechanical sound (Web Audio API)
-- **RANDOM** button flips the board to a random message
 
 ## API
 
