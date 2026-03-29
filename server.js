@@ -12,6 +12,24 @@ app.use(express.static(path.join(__dirname, 'public')));
 const sessions = new Map();
 const globalClients = [];
 const lastMessage = new Map();
+const lastActivity = new Map(); // timestamp of last POST per session
+
+// Cleanup sessions with no SSE clients and no activity in 5 minutes
+const SESSION_TTL = 5 * 60 * 1000;
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, clients] of sessions) {
+    if (clients.length === 0) {
+      const activity = lastActivity.get(id) || 0;
+      if (now - activity > SESSION_TTL) {
+        sessions.delete(id);
+        lastMessage.delete(id);
+        lastActivity.delete(id);
+      }
+    }
+  }
+  broadcastSessionList();
+}, 60 * 1000);
 
 function getSession(id) {
   if (!sessions.has(id)) sessions.set(id, []);
@@ -78,8 +96,13 @@ app.get(['/api/events', '/api/events/:session'], (req, res) => {
     const i = clients.indexOf(res);
     if (i !== -1) clients.splice(i, 1);
     if (clients.length === 0) {
-      sessions.delete(session);
-      lastMessage.delete(session);
+      const activity = lastActivity.get(session) || 0;
+      // Keep session alive if it has recent POST activity (e.g. Claude hooks)
+      if (Date.now() - activity > SESSION_TTL) {
+        sessions.delete(session);
+        lastMessage.delete(session);
+        lastActivity.delete(session);
+      }
     }
     broadcastSessionList();
   });
@@ -121,8 +144,10 @@ app.post(['/api/message', '/api/message/:session'], (req, res) => {
     return res.status(400).json({ error: 'Send { lines: ["LINE1", "LINE2", ...] }' });
   }
 
+  const isNew = !sessions.has(session);
   const result = formatMessage(lines);
   lastMessage.set(session, result);
+  lastActivity.set(session, Date.now());
 
   // Push to session clients
   const clients = getSession(session);
@@ -132,6 +157,9 @@ app.post(['/api/message', '/api/message/:session'], (req, res) => {
   // Push to dashboard clients
   const globalData = JSON.stringify({ session, lines: result });
   globalClients.forEach(c => c.write(`data: ${globalData}\n\n`));
+
+  // Notify dashboard of new session (even without SSE viewers)
+  if (isNew) broadcastSessionList();
 
   res.json({ ok: true, session, clients: clients.length });
 });
